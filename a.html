@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quantum Yield Calculation - CUDA C++</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.css" rel="stylesheet" />
+
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --accent-color: #3498db;
+            --bg-color: #f8f9fa;
+            --code-bg: #ffffff;
+            --border-color: #e9ecef;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: var(--bg-color);
+            margin: 0;
+            padding: 40px;
+        }
+
+        .container {
+            max-width: 850px;
+            margin: 0 auto;
+            background: white;
+            padding: 50px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+
+        header {
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+
+        h1 {
+            color: var(--primary-color);
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .meta {
+            color: #666;
+            font-size: 14px;
+            text-align: right;
+        }
+
+        h2 {
+            color: var(--primary-color);
+            font-size: 18px;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            border-left: 4px solid var(--accent-color);
+            padding-left: 10px;
+        }
+
+        /* 程式碼區塊樣式優化 */
+        pre[class*="language-"] {
+            background: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px; /* 適合列印的大小 */
+            line-height: 1.5;
+            margin-bottom: 20px;
+        }
+
+        code[class*="language-"] {
+            text-shadow: none; /* 移除陰影以利列印 */
+        }
+
+        .command-block {
+            background: #f1f3f5;
+            padding: 10px 15px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+            color: #495057;
+            border: 1px solid #dee2e6;
+        }
+
+        /* 列印專用樣式 (Print CSS) */
+        @media print {
+            body {
+                background-color: white;
+                padding: 0;
+                color: black;
+            }
+            .container {
+                box-shadow: none;
+                max-width: 100%;
+                width: 100%;
+                padding: 0;
+                margin: 0;
+            }
+            pre[class*="language-"] {
+                border: 1px solid #ccc;
+                white-space: pre-wrap; /* 強制換行，防止代碼被切斷 */
+                word-wrap: break-word;
+            }
+            /* 隱藏不必要的裝飾 */
+            .no-print {
+                display: none;
+            }
+            a {
+                text-decoration: none;
+                color: black;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <div>
+            <h1>實驗數據分析程式碼</h1>
+            <div style="font-size: 14px; color: #666; margin-top: 5px;">Fluorescence Quantum Yield Calculation (CUDA C++)</div>
+        </div>
+        <div class="meta">
+            <div>Topic: Physical Chemistry Experiment</div>
+            <div>Date: 2025-12-15</div>
+        </div>
+    </header>
+
+    <h2>1. 程式碼實作 (quantum_yield.cu)</h2>
+    <p>此程式利用 CUDA 平行運算架構處理多組光譜數據，計算平均量子產率及標準偏差。</p>
+
+    <pre class="line-numbers"><code class="language-cpp">#include &lt;iostream&gt;
+#include &lt;vector&gt;
+#include &lt;cmath&gt;
+#include &lt;iomanip&gt;
+#include &lt;cuda_runtime.h&gt;
+
+// 錯誤檢查巨集
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true) {
+   if (code != cudaSuccess) {
+      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) exit(code);
+   }
+}
+
+// CUDA Kernel: 平行計算每一組的量子產率
+__global__ void calculate_yield_kernel(const double* d_std_area, 
+                                       const double* d_unk_area, 
+                                       double* d_results, 
+                                       double std_qy_percent, 
+                                       int n) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx &lt; n) {
+        // Unknown_QY = Std_QY * (Unknown_Area / Std_Area)
+        double ratio = d_unk_area[idx] / d_std_area[idx];
+        d_results[idx] = std_qy_percent * ratio;
+    }
+}
+
+int main() {
+    // 1. 實驗數據準備 (Host Side)
+    // Tetracene 積分面積 (0.1, 0.05, 0.03)
+    std::vector&lt;double&gt; h_std_area = {3.4522e5, 5.2197e5, 4.9133e5};
+    // LD12 積分面積 (對應濃度)
+    std::vector&lt;double&gt; h_unk_area = {2.0668e5, 1.3628e5, 1.0089e5};
+    
+    int n = h_std_area.size();
+    size_t bytes = n * sizeof(double);
+    double std_qy = 13.00; // Tetracene 已知產率 %
+
+    // 儲存結果的 Host 向量
+    std::vector&lt;double&gt; h_results(n);
+
+    // 2. 配置 Device 記憶體
+    double *d_std_area, *d_unk_area, *d_results;
+    gpuErrchk(cudaMalloc(&amp;d_std_area, bytes));
+    gpuErrchk(cudaMalloc(&amp;d_unk_area, bytes));
+    gpuErrchk(cudaMalloc(&amp;d_results, bytes));
+
+    // 3. 資料傳輸 Host -&gt; Device
+    gpuErrchk(cudaMemcpy(d_std_area, h_std_area.data(), bytes, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(d_unk_area, h_unk_area.data(), bytes, cudaMemcpyHostToDevice));
+
+    // 4. 執行 Kernel (1 Block, 3 Threads)
+    calculate_yield_kernel&lt;&lt;&lt;1, n&gt;&gt;&gt;(d_std_area, d_unk_area, d_results, std_qy, n);
+    gpuErrchk(cudaPeekAtLastError());
+    gpuErrchk(cudaDeviceSynchronize());
+
+    // 5. 資料傳輸 Device -&gt; Host
+    gpuErrchk(cudaMemcpy(h_results.data(), d_results, bytes, cudaMemcpyDeviceToHost));
+
+    // 6. 統計分析 (CPU)
+    double sum = 0.0;
+    std::cout &lt;&lt; "Individual Yields Calculation:" &lt;&lt; std::endl;
+    for (int i = 0; i &lt; n; ++i) {
+        std::cout &lt;&lt; "  Sample " &lt;&lt; i+1 &lt;&lt; " (Abs " &lt;&lt; (i==0?0.1:i==1?0.05:0.03) &lt;&lt; "): " 
+                  &lt;&lt; std::fixed &lt;&lt; std::setprecision(2) &lt;&lt; h_results[i] &lt;&lt; " %" &lt;&lt; std::endl;
+        sum += h_results[i];
+    }
+
+    double mean = sum / n;
+    double sum_sq_diff = 0.0;
+    for (double val : h_results) {
+        sum_sq_diff += (val - mean) * (val - mean);
+    }
+    double std_dev = std::sqrt(sum_sq_diff / (n - 1));
+
+    // 7. 最終輸出
+    std::cout &lt;&lt; "\n--------------------------------------------------" &lt;&lt; std::endl;
+    std::cout &lt;&lt; "Result for Question 1:" &lt;&lt; std::endl;
+    std::cout &lt;&lt; "Estimated LD12 Fluorescence Quantum Yield: " 
+              &lt;&lt; mean &lt;&lt; " ± " &lt;&lt; std_dev &lt;&lt; " %" &lt;&lt; std::endl;
+    std::cout &lt;&lt; "--------------------------------------------------" &lt;&lt; std::endl;
+
+    // 8. 釋放記憶體
+    cudaFree(d_std_area);
+    cudaFree(d_unk_area);
+    cudaFree(d_results);
+
+    return 0;
+}</code></pre>
+
+    <h2>2. 編譯與執行指令</h2>
+    <div class="command-block">
+        $ nvcc quantum_yield.cu -o qy_calc && ./qy_calc
+    </div>
+
+    <h2>3. 預期輸出結果</h2>
+    <pre class="language-none" style="background-color: #f8f9fa;"><code>Individual Yields Calculation:
+  Sample 1 (Abs 0.1): 7.78 %
+  Sample 2 (Abs 0.05): 3.39 %
+  Sample 3 (Abs 0.03): 2.67 %
+
+--------------------------------------------------
+Result for Question 1:
+Estimated LD12 Fluorescence Quantum Yield: 4.61 ± 2.77 %
+--------------------------------------------------</code></pre>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.js"></script>
+
+</body>
+</html>
